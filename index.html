@@ -52,9 +52,13 @@ body.light{
   --mm-edge:#A0B4D8;
   --mm-node:#C8D6EE;
 }
-html,body{width:100%;height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);user-select:none;}
-[contenteditable='true'],[contenteditable=true],textarea,input{user-select:text!important;-webkit-user-select:text!important;cursor:text;}
-.nd-text,.nd-text .t-title,.nd-text .t-body,.nd-sticky textarea{user-select:text!important;-webkit-user-select:text!important;}
+html,body{width:100%;height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);}
+/* Disable selection on chrome/UI only, NOT on editable content */
+#topbar,#toolbar,#statusbar,#minimap,.tl-btn,.tb-icon-btn,.tb-btn,.tt-btn,.vc-btn,.st-clr,#ctxmenu,.mo-ttl,.bs-card,.help-row,.node > .ports,.node > .n-del,.node > .n-add,.node > .resize-h{user-select:none;-webkit-user-select:none;}
+/* Editable content always selectable */
+[contenteditable='true'],[contenteditable=true],textarea,input,.nd-text,.nd-text .t-title,.nd-text .t-body,.nd-sticky textarea{user-select:text!important;-webkit-user-select:text!important;cursor:text;}
+/* Non-editing nodes: prevent accidental selection while dragging */
+.node:not(.text-editing) .nd-sticky,.node:not(.text-editing) .nd-shape,.node:not(.text-editing) .nd-link,.node:not(.text-editing) .nd-image{user-select:none;-webkit-user-select:none;}
 .nd-sticky textarea{background:transparent;border:none;outline:none;resize:none;font-family:'DM Sans',sans-serif;font-size:14px;line-height:1.5;color:inherit;width:100%;height:100%;}
 
 /* ── LOADING ── */
@@ -125,8 +129,11 @@ textarea{cursor:text!important;}
 
 /* ports */
 .ports{position:absolute;inset:0;pointer-events:none;}
-.node:hover .ports,.node.sel .ports{pointer-events:all;}
-.port{position:absolute;width:11px;height:11px;background:var(--acc);border:2px solid var(--bg);border-radius:50%;cursor:crosshair;opacity:0;transition:opacity .15s,transform .15s;z-index:20;}
+/* ports container NEVER captures events; only individual port dots do */
+.node:hover .port,.node.sel .port{pointer-events:all;}
+/* Hide ports entirely while editing text so they never block selection */
+.node.text-editing .ports{display:none!important;}
+.port{position:absolute;width:11px;height:11px;background:var(--acc);border:2px solid var(--bg);border-radius:50%;cursor:crosshair;opacity:0;transition:opacity .15s,transform .15s;z-index:20;pointer-events:none;}
 .node:hover .port,.node.sel .port{opacity:1;}
 .port:hover{transform:scale(1.5)!important;background:var(--acc2);}
 .port[data-p="n"]{top:-5.5px;left:50%;transform:translateX(-50%);}
@@ -165,7 +172,8 @@ textarea{cursor:text!important;}
 .sc-wht{background:#F1F5F9;color:#0F172A;}
 
 /* Text — transparent, rendered directly on canvas */
-.nd-text{width:100%;height:100%;background:transparent;border:none;padding:4px 2px;display:flex;flex-direction:column;gap:1px;}
+.nd-text{width:100%;height:100%;background:transparent;border:none;padding:4px 2px;display:flex;flex-direction:column;gap:1px;user-select:text;-webkit-user-select:text;position:relative;z-index:5;}
+.nd-text .t-title,.nd-text .t-body{width:100%;display:block;}
 .nd-text .t-title{font-weight:700;font-size:18px;color:var(--txt);outline:none;min-height:26px;word-break:break-word;font-family:'Syne',sans-serif;line-height:1.25;cursor:text;letter-spacing:-.3px;}
 .nd-text .t-body{font-size:13px;color:var(--txt2);outline:none;min-height:1em;line-height:1.5;word-break:break-word;cursor:text;margin-top:2px;}
 .nd-text .t-body:empty::before{content:'subtítulo...';opacity:.28;pointer-events:none;font-style:italic;}
@@ -355,7 +363,7 @@ textarea{cursor:text!important;}
 .tt-btn.font-mono{font-family:'JetBrains Mono',monospace;font-size:10px;}
 /* Text editing mode — disable drag, show text cursor */
 .node.text-editing{outline:2px solid var(--acc)!important;outline-offset:3px;box-shadow:0 0 0 8px rgba(99,102,241,.1)!important;}
-.node.text-editing,.node.text-editing *{cursor:text!important;}
+.node.text-editing,.node.text-editing *{cursor:text!important;user-select:text!important;-webkit-user-select:text!important;}
 .node.text-editing .nd-text{cursor:text!important;}
 .tt-btn.fmt-b{font-weight:800;font-size:13px;}
 .tt-btn.fmt-i{font-style:italic;font-size:13px;}
@@ -399,6 +407,9 @@ body.light #theme-btn::after{content:''}
 
 /* ── TOUCH DEVICES ── */
 @media(pointer:coarse){
+  #ctxmenu{min-width:210px;padding:8px;}
+  #ctxmenu .ci{padding:12px 14px;font-size:14px;}
+  #ctxmenu .ci-icon{font-size:18px;}
   .tl-btn{width:48px;height:46px;}
   .tl-btn svg{width:20px;height:20px;}
   .tb-icon-btn{width:38px;height:38px;}
@@ -1010,8 +1021,8 @@ function cloudConnect(code){
   // Initial load + realtime listener
   CLOUD.ref.on('value',snap=>{
     if(CLOUD.applying)return;
-    // If user is actively editing text, defer remote updates until they finish
-    if(G.textEditing||G.textSelecting){
+    // Defer remote updates while user is editing text OR actively dragging/resizing
+    if(G.textEditing||G.textSelecting||G.drag||G.resize||G.pan||G.touchDrag||G.touchPan){
       CLOUD.pendingRemote=snap.val();
       return;
     }
@@ -1049,6 +1060,9 @@ function applyRemoteState(d){
   });
   // Don't overwrite the node currently being edited (keep local until blur)
   if(editingId&&oldNs[editingId]){newNs[editingId]=oldNs[editingId];}
+  // Also protect a recently-edited node (within 2.5s) from remote clobber
+  const recentOK=G.recentEditId&&(Date.now()-G.recentEditTime<2500);
+  if(recentOK&&oldNs[G.recentEditId]){newNs[G.recentEditId]=oldNs[G.recentEditId];}
   G.ns=newNs;G.es=newEs;G.nid=d.nid||G.nid||1;
   // Remove DOM nodes that no longer exist
   document.querySelectorAll('.node').forEach(el=>{
@@ -1060,8 +1074,12 @@ function applyRemoteState(d){
     const id=el.id.replace('ep-','');
     if(!G.es[id])el.remove();
   });
-  // Re-render nodes (renderNode reuses existing DOM elements)
-  Object.keys(G.ns).forEach(id=>{if(id!==editingId)renderNode(id);});
+  // Re-render only nodes that actually changed; skip editing & recently-edited
+  Object.keys(G.ns).forEach(id=>{
+    if(id===editingId)return;
+    if(recentOK&&id===G.recentEditId)return;
+    renderNode(id);
+  });
   updEdges();
   // Keep selection valid
   G.sel.forEach(id=>{if(!G.ns[id])G.sel.delete(id);});
@@ -1108,7 +1126,8 @@ const G = {
   txtN:null,stickyN:null,vcN:null,
   textSelecting:false,
   textEditing:null,
-  pinch:null,lastTap:0,lastTapNode:null,touchPan:null,touchDrag:null
+  pinch:null,lastTap:0,lastTapNode:null,touchPan:null,touchDrag:null,longPress:null,
+  recentEditId:null,recentEditTime:0
 };
 
 // ══════════════════════════════════════════════
@@ -1232,6 +1251,32 @@ function renderNode(id){
   el.classList.toggle('sel',G.sel.has(id));
   // inner
   el.innerHTML=nHTML(n);
+  // TEXT SELECTION FIX: attach capture-phase guards directly on editable parts
+  // This intercepts mousedown BEFORE the node's drag handler, guaranteeing
+  // native browser text selection works without any interference.
+  if(n.type==='text'||n.type==='sticky'){
+    el.querySelectorAll('.t-title,.t-body,textarea').forEach(edEl=>{
+      // Only intercept mousedown when ALREADY editing → native text selection.
+      // Otherwise let event bubble to node handler for normal select + drag.
+      edEl.addEventListener('mousedown',e=>{
+        if(G.textEditing===id){
+          e.stopPropagation();
+          G.textSelecting=true;
+          G.drag=null;G.pan=null;G.sbox=null;
+          const done=()=>{setTimeout(()=>{G.textSelecting=false;},80);};
+          document.addEventListener('mouseup',done,{once:true});
+        }
+      },true);
+      edEl.addEventListener('blur',e=>{
+        saveTxtHtml(id);
+        setTimeout(()=>{
+          const active=document.activeElement;
+          const stillInside=active&&el.contains(active);
+          if(!stillInside&&G.textEditing===id){exitTextEdit();}
+        },60);
+      },false);
+    });
+  }
   // ports
   const pts=document.createElement('div');pts.className='ports';
   ['n','s','e','w'].forEach(p=>{
@@ -1271,7 +1316,7 @@ function nHTML(n){
       // richText nodes store HTML; plain text nodes store escaped text
       const tC=n.d.richText?n.d.title:esc(n.d.title||'');
       const bC=n.d.richText?(n.d.body||''):esc(n.d.body||'');
-      return`<div class="nd-text"><div class="t-title" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" style="${titleSt}">${tC}</div><div class="t-body" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" style="${bodySt}">${bC}</div></div>`;
+      return`<div class="nd-text"><div class="t-title" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','title')" style="${titleSt}">${tC}</div><div class="t-body" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','body')" style="${bodySt}">${bC}</div></div>`;
     }
     case'image':return n.d.url?`<div class="nd-img"><img src="${esc(n.d.url)}" alt="${esc(n.d.lbl)}"><div class="img-cap">${esc(n.d.lbl)||'Imagen'}</div></div>`:`<div class="nd-img"><div class="img-empty" ondblclick="editN('${id}')"><span>🖼</span>Doble clic para<br>agregar imagen</div></div>`;
     case'link':{const dm=()=>{try{return new URL(n.d.url).hostname;}catch(e){return'';}};return n.d.url?`<div class="nd-link"><div class="lk-hdr">${dm()?`<img class="lk-fav" src="https://www.google.com/s2/favicons?domain=${dm()}&sz=32" onerror="this.style.display='none'">`:'🔗'}<div class="lk-title">${esc(n.d.ttl)}</div></div><a href="${esc(n.d.url)}" class="lk-url" target="_blank" onclick="event.stopPropagation()">${esc(n.d.url)}</a>${n.d.dsc?`<div class="lk-desc">${esc(n.d.dsc)}</div>`:''}</div>`:`<div class="nd-link"><div class="lk-hdr"><span>🔗</span><div class="lk-title">${esc(n.d.ttl)}</div></div><div class="lk-empty" ondblclick="editN('${id}')">Doble clic para configurar</div></div>`;}
@@ -1392,6 +1437,13 @@ function showEdgeCx(id,ev){
 function setupNE(el,id){
   // Touch → forward to mousedown/move/up on the node
   el.addEventListener('mousedown',ev=>{
+    // TEXT EDIT MODE + editable target → hands off completely for native selection
+    if(G.textEditing===id&&(ev.target.isContentEditable||ev.target.tagName==='TEXTAREA'||ev.target.closest('[contenteditable="true"]'))){
+      G.textSelecting=true;
+      G.drag=null;G.pan=null;G.sbox=null;
+      document.addEventListener('mouseup',()=>{setTimeout(()=>{G.textSelecting=false;},60);},{once:true});
+      return; // absolutely no interference
+    }
     if(ev.target.classList.contains('port')||ev.target.classList.contains('resize-h')||ev.target.classList.contains('n-del')||ev.target.classList.contains('n-add'))return;
     if(['INPUT','TEXTAREA','A'].includes(ev.target.tagName)){
       ev.stopPropagation();
@@ -1424,20 +1476,11 @@ function setupNE(el,id){
       if(!G.sel.has(id)){clearSel();G.sel.add(id);el.classList.add('sel');updSt();}
       return;
     }
-    if(ev.target.contentEditable==='true'){
-      // Signal that user is selecting text — canvas mousemove must not interfere
-      G.textSelecting=true;
-      G.drag=null;
-      document.addEventListener('mouseup',()=>{G.textSelecting=false;},{once:true});
-      if(!G.sel.has(id)){
-        // First click: select the node and show toolbar
-        if(!ev.shiftKey){clearSel();G.sel.add(id);el.classList.add('sel');}
-        else{G.sel.add(id);el.classList.add('sel');}
-        updSt();
-      }
-      // Do NOT stopPropagation → browser handles text cursor/selection natively
-      return;
-    }
+    // contenteditable click when NOT already editing → normal select+drag.
+    // (When already editing, the capture-phase handler on the editable element
+    //  already handled it and stopped propagation, so we won't reach here.)
+    // So here we always treat it as a node interaction: select + prepare drag.
+
     // Cut tool: don't consume event, let it bubble to canvas handler
     if(G.tool==='cut'){return;}
     ev.stopPropagation();
@@ -1595,7 +1638,14 @@ function initEvents(){
       document.getElementById('edge-tmp').style.display='none';
       G.conn=null;
     }
-    if(G.drag){saveHist();G.drag=null;}
+    if(G.drag){
+      G.drag=null;saveHist();
+      // apply deferred remote update after drag completes
+      if(CLOUD.pendingRemote&&!G.textEditing){
+        const d=CLOUD.pendingRemote;CLOUD.pendingRemote=null;
+        if(d&&(d.ns||d.es)){CLOUD.applying=true;applyRemoteState(d);preloadIDBMedia().then(()=>{mm();CLOUD.applying=false;});}
+      }
+    }
     if(G.resize){saveHist();renderNode(G.resize.id);G.resize=null;}
     if(G.pan){G.pan=null;cw.classList.remove('panning');}
     if(G.sbox){G.sbox=null;document.getElementById('selbox').style.display='none';}
@@ -1629,6 +1679,14 @@ function initEvents(){
   });
 
   document.getElementById('minimap').addEventListener('click',mmClick);
+
+  // Allow text selection to start inside editing nodes (guard against any cancel)
+  document.addEventListener('selectstart',ev=>{
+    // If we're in text edit mode, never let anything cancel selection
+    if(G.textEditing||ev.target?.isContentEditable||ev.target?.closest?.('[contenteditable="true"]')){
+      ev.stopPropagation();
+    }
+  },true);
 
   // ══════════════════════════════════════════════
   // TOUCH SUPPORT — bridges touch events to mouse logic + pinch zoom
@@ -1683,11 +1741,27 @@ function initEvents(){
       if(!G.sel.has(tgtNodeId)){clearSel();G.sel.add(tgtNodeId);tgtNodeEl.classList.add('sel');updSt();}
       const st={};G.sel.forEach(sid=>{if(G.ns[sid])st[sid]={x:G.ns[sid].x,y:G.ns[sid].y};});
       G.touchDrag={ids:Array.from(G.sel),sx:t.clientX,sy:t.clientY,st,started:false};
+      // Long-press on node → context menu
+      G.longPress=setTimeout(()=>{
+        if(G.touchDrag&&!G.touchDrag.started){
+          G.touchDrag=null;
+          if(navigator.vibrate)navigator.vibrate(30);
+          showNCx(tgtNodeId,{clientX:t.clientX,clientY:t.clientY});
+        }
+      },500);
     }else{
-      // 1 finger on empty canvas → PAN
+      // 1 finger on empty canvas → PAN (or long-press → add-element menu)
       ev.preventDefault();
-      G.touchPan={sx:t.clientX,sy:t.clientY,vx:G.vp.x,vy:G.vp.y};
+      G.touchPan={sx:t.clientX,sy:t.clientY,vx:G.vp.x,vy:G.vp.y,moved:false};
       clearSel();
+      // Long-press on empty canvas → element menu
+      G.longPress=setTimeout(()=>{
+        if(G.touchPan&&!G.touchPan.moved){
+          G.touchPan=null;
+          if(navigator.vibrate)navigator.vibrate(30);
+          showCxCanvas({clientX:t.clientX,clientY:t.clientY});
+        }
+      },500);
     }
   },{passive:false});
 
@@ -1711,6 +1785,8 @@ function initEvents(){
 
     if(G.touchPan){
       ev.preventDefault();
+      const moved=Math.hypot(t.clientX-G.touchPan.sx,t.clientY-G.touchPan.sy);
+      if(moved>8){G.touchPan.moved=true;clearTimeout(G.longPress);}
       G.vp.x=G.touchPan.vx+(t.clientX-G.touchPan.sx);
       G.vp.y=G.touchPan.vy+(t.clientY-G.touchPan.sy);
       applyVP();mm();
@@ -1720,6 +1796,7 @@ function initEvents(){
       ev.preventDefault();
       const dx=t.clientX-G.touchDrag.sx, dy=t.clientY-G.touchDrag.sy;
       if(!G.touchDrag.started&&Math.hypot(dx,dy)<5)return;
+      clearTimeout(G.longPress);
       G.touchDrag.started=true;
       const wdx=dx/G.vp.s, wdy=dy/G.vp.s;
       G.touchDrag.ids.forEach(id=>{
@@ -1734,6 +1811,7 @@ function initEvents(){
   },{passive:false});
 
   cw.addEventListener('touchend',ev=>{
+    clearTimeout(G.longPress);
     if(G.pinch){G.pinch=null;return;}
     if(G.touchPan){G.touchPan=null;return;}
     if(G.touchDrag){
@@ -1780,6 +1858,13 @@ function clearSel(rerender=true){
   if(rerender)G.sel.forEach(id=>document.getElementById('nd-'+id)?.classList.remove('sel'));
   G.sel.clear();
   document.querySelectorAll('.e-path.sel').forEach(p=>{p.classList.remove('sel');p.setAttribute('marker-end','url(#arr)');});
+  // Exit text editing and remove any stray edit/selection classes
+  if(G.textEditing){
+    document.getElementById('nd-'+G.textEditing)?.classList.remove('text-editing');
+    G.textEditing=null;
+  }
+  document.querySelectorAll('.node.text-editing').forEach(n=>n.classList.remove('text-editing'));
+  document.querySelectorAll('.node.sel').forEach(n=>n.classList.remove('sel'));
   G.txtN=null;G.stickyN=null;G.vcN=null;
   document.getElementById('txt-toolbar').style.display='none';
   document.getElementById('sticky-toolbar').style.display='none';
@@ -1826,7 +1911,15 @@ function showCxCanvas(ev){
   document.getElementById('cx-edit').style.display='none';
   document.getElementById('cx-dup').style.display='none';
   document.getElementById('cx-del').style.display='none';
-  cx.style.left=ev.clientX+'px';cx.style.top=ev.clientY+'px';cx.style.display='block';
+  cx.style.display='block';
+  clampMenu(cx,ev.clientX,ev.clientY);
+}
+function clampMenu(cx,x,y){
+  cx.style.left='0px';cx.style.top='0px';
+  const w=cx.offsetWidth,h=cx.offsetHeight;
+  const L=Math.min(x,window.innerWidth-w-8);
+  const T=Math.min(y,window.innerHeight-h-8);
+  cx.style.left=Math.max(4,L)+'px';cx.style.top=Math.max(4,T)+'px';
 }
 function showNCx(id,ev){
   G.ctxN=id;G.ctxP=s2w(ev.clientX,ev.clientY);
@@ -1836,7 +1929,8 @@ function showNCx(id,ev){
   document.getElementById('cx-dup').style.display='flex';
   document.getElementById('cx-del').style.display='flex';
   document.getElementById('cx-del').onclick=()=>{cxDel();};
-  cx.style.left=ev.clientX+'px';cx.style.top=ev.clientY+'px';cx.style.display='block';
+  cx.style.display='block';
+  clampMenu(cx,ev.clientX,ev.clientY);
 }
 function cxAdd(t){
   document.getElementById('ctxmenu').style.display='none';
@@ -2052,6 +2146,31 @@ function mmClick(ev){
 // ══════════════════════════════════════════════
 // TEXT EDIT MODE
 // ══════════════════════════════════════════════
+// Tab / Enter navigation between title and subtitle in text nodes
+function txtKeyNav(ev,id,part){
+  const el=document.getElementById('nd-'+id);if(!el)return;
+  const title=el.querySelector('.t-title');
+  const body=el.querySelector('.t-body');
+  // Tab: title→body, Shift+Tab: body→title
+  if(ev.key==='Tab'){
+    ev.preventDefault();
+    const target=(part==='title'&&!ev.shiftKey)?body:(part==='body'&&ev.shiftKey)?title:null;
+    if(target){
+      target.focus();
+      const r=document.createRange();r.selectNodeContents(target);r.collapse(false);
+      const s=window.getSelection();s?.removeAllRanges();s?.addRange(r);
+    }
+    return;
+  }
+  // Enter on title (without shift) → jump to body
+  if(ev.key==='Enter'&&part==='title'&&!ev.shiftKey){
+    ev.preventDefault();
+    body.focus();
+    const r=document.createRange();r.selectNodeContents(body);r.collapse(false);
+    const s=window.getSelection();s?.removeAllRanges();s?.addRange(r);
+    return;
+  }
+}
 function enterTextEdit(id){
   if(G.textEditing===id)return;
   if(G.textEditing)exitTextEdit();
@@ -2090,16 +2209,15 @@ function exitTextEdit(){
   const el=document.getElementById('nd-'+editedId);
   if(el){
     el.classList.remove('text-editing');
-    // Clear inline user-select overrides
     [el,el.querySelector('.nd-text'),el.querySelector('.t-title'),el.querySelector('.t-body'),el.querySelector('textarea')]
       .forEach(e=>{if(e){e.style.userSelect='';e.style.webkitUserSelect='';}});
   }
+  // Belt-and-suspenders: strip class from ALL nodes
+  document.querySelectorAll('.node.text-editing').forEach(n=>n.classList.remove('text-editing'));
   saveTxtHtml(editedId);
   G.textEditing=null;
   document.getElementById('cwrap')?.focus();
-  // Push final edited content to cloud
   if(isCloudBoard())cloudPush();
-  // Apply any remote update that arrived while editing
   if(CLOUD.pendingRemote){
     const d=CLOUD.pendingRemote;CLOUD.pendingRemote=null;
     if(d&&(d.ns||d.es)){
@@ -2401,6 +2519,8 @@ function saveTxtHtml(id){
   if(t)G.ns[id].d.title=t.innerHTML;
   if(b)G.ns[id].d.body=b.innerHTML;
   G.ns[id].d.richText=true;
+  // Protect this node from remote overwrite for a short window
+  G.recentEditId=id;G.recentEditTime=Date.now();
   // Only add to history if content actually changed
   if(G.ns[id].d.title!==prevT||G.ns[id].d.body!==prevB)saveHist();
 }
@@ -3155,4 +3275,5 @@ setInterval(saveStore,8000);
 </script>
 </body>
 </html>
+
 
