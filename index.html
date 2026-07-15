@@ -1162,15 +1162,56 @@ window.addEventListener('DOMContentLoaded',()=>{
 });
 
 function welcome(){
-  const cx=window.innerWidth/2-32,cy=window.innerHeight/2-40;
-  const root=nAdd('text',cx-100,cy-40,{title:'🧠 Mi Mapa Mental',body:'Doble clic para editar',fs:15},200,70);
-  const cols=['sc-blu','sc-grn','sc-pnk','sc-prp'];
-  const labs=['💡 Ideas','🚀 Proyectos','📚 Recursos','🎯 Objetivos'];
-  const offs=[[-250,-100],[210,-100],[-250,80],[210,80]];
-  offs.forEach(([ox,oy],i)=>{
-    const id=nAdd('sticky',cx+ox,cy+oy,{txt:labs[i],sc:cols[i]},160,90);
-    eAdd(root,'e',id,'w');
-  });
+  // Educational welcome map — teaches the basics + how to share
+  const CX=400, CY=300; // world-space anchor
+  // Silence history/cloud noise while building
+  const wasApplying=CLOUD.applying; CLOUD.applying=true;
+
+  // Central title
+  const root=nAdd('text',CX-150,CY-260,
+    {title:'👋 Bienvenido a MindFlow',body:'Tu lienzo colaborativo para mapas mentales. Explora los nodos de abajo para aprender.',fs:26,font:'syne',bold:true,align:'center'},
+    380,120);
+
+  // ── Column 1: Herramientas básicas ──
+  const t1=nAdd('sticky',CX-540,CY-60,
+    {txt:'🖱️ CREAR ELEMENTOS\n\n• Usa la barra izquierda para elegir una herramienta (nota, texto, forma, imagen, enlace, video)\n• Haz clic en el lienzo para colocarla\n• O usa los atajos: S, T, R, I, L, Y',sc:'sc-blu'},
+    260,190);
+  const t2=nAdd('sticky',CX-540,CY+150,
+    {txt:'✏️ EDITAR TEXTO\n\n• Doble clic en un nodo para editar\n• Selecciona texto con el mouse\n• Usa la barra flotante para cambiar tipografía, tamaño, negrita, color\n• Tab salta al subtítulo',sc:'sc-grn'},
+    260,190);
+
+  // ── Column 2: Navegación ──
+  const n1=nAdd('sticky',CX-250,CY-60,
+    {txt:'🧭 MOVERTE EN EL LIENZO\n\n• Arrastra un espacio vacío para mover el canvas\n• Rueda del mouse para zoom\n• Tecla F: enfocar lo seleccionado\n• En tablet: 1 dedo mueve, 2 dedos zoom',sc:'sc-prp'},
+    260,190);
+  const n2=nAdd('sticky',CX-250,CY+150,
+    {txt:'🔗 CONECTAR IDEAS\n\n• Selecciona la herramienta Conectar (C)\n• Arrastra de un nodo a otro\n• Para borrar conexiones usa Cortar (X)\n• Mantén presionado en tablet para el menú',sc:'sc-pnk'},
+    260,190);
+
+  // ── Column 3: Compartir en la nube (highlighted) ──
+  const share=nAdd('text',CX+80,CY-90,
+    {title:'☁️ COMPARTIR TU BOARD',body:'',fs:20,font:'poppins',bold:true,align:'left'},
+    320,50);
+  const shareSteps=nAdd('sticky',CX+80,CY-20,
+    {txt:'1️⃣ Clic en "Compartir" (arriba a la derecha)\n\n2️⃣ Escribe un CÓDIGO único (ej: MIEQUIPO2026)\n\n3️⃣ Clic en "Abrir / Conectar"\n\n4️⃣ Copia el enlace y compártelo\n\n✅ Todos con ese código editan el MISMO board en tiempo real, desde cualquier dispositivo',sc:'sc-cyn'},
+    320,240);
+
+  // ── Bottom tip ──
+  const tip=nAdd('text',CX-150,CY+380,
+    {title:'💡 Tip',body:'Cuando quieras empezar de cero, borra estos nodos (selecciona y presiona Delete) o crea un nuevo canvas desde el menú superior.',fs:14,font:'dm',bold:false,align:'center'},
+    380,90);
+
+  // Connect the map
+  eAdd(root,'s',t1,'n');
+  eAdd(root,'s',n1,'n');
+  eAdd(root,'s',share,'n');
+  eAdd(t1,'s',t2,'n');
+  eAdd(n1,'s',n2,'n');
+  eAdd(share,'s',shareSteps,'n');
+
+  CLOUD.applying=wasApplying;
+  // Fit the view to show the whole welcome map
+  setTimeout(()=>{fit();},100);
 }
 
 // ══════════════════════════════════════════════
