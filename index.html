@@ -1083,17 +1083,28 @@ function cloudConnect(code){
 function applyRemoteState(d){
   const newNs=d.ns||{};const newEs=d.es||{};
   const editingId=G.textEditing;
-  // Preserve local blob URLs and (if editing) the local copy of that node
   const oldNs=G.ns;
+  const now=Date.now();
+  const LOCAL_WIN=10000; // 10s: local changes win over incoming remote
+  // Preserve local blob URLs
   Object.keys(newNs).forEach(id=>{
     if(oldNs[id]?.d?._blobUrl&&newNs[id]?.d)newNs[id].d._blobUrl=oldNs[id].d._blobUrl;
   });
-  // Don't overwrite the node currently being edited (keep local until blur)
+  // MERGE: for any node touched locally within the window, keep the LOCAL copy
+  // (prevents a stale remote snapshot from deleting/reverting fresh local work)
+  Object.keys(oldNs).forEach(id=>{
+    const t=G.localTouch[id];
+    if(t&&(now-t<LOCAL_WIN)){
+      newNs[id]=oldNs[id]; // local wins
+    }
+  });
+  // Never touch the node being edited
   if(editingId&&oldNs[editingId]){newNs[editingId]=oldNs[editingId];}
-  // Also protect a recently-edited node (within 2.5s) from remote clobber
-  const recentOK=G.recentEditId&&(Date.now()-G.recentEditTime<2500);
+  const recentOK=G.recentEditId&&(now-G.recentEditTime<2500);
   if(recentOK&&oldNs[G.recentEditId]){newNs[G.recentEditId]=oldNs[G.recentEditId];}
-  G.ns=newNs;G.es=newEs;G.nid=d.nid||G.nid||1;
+  // Clean up expired localTouch entries
+  Object.keys(G.localTouch).forEach(id=>{if(now-G.localTouch[id]>LOCAL_WIN)delete G.localTouch[id];});
+  G.ns=newNs;G.es=newEs;G.nid=Math.max(d.nid||1,G.nid||1);
   // Remove DOM nodes that no longer exist
   document.querySelectorAll('.node').forEach(el=>{
     const id=el.id.replace('nd-','');
@@ -1115,9 +1126,13 @@ function applyRemoteState(d){
     if(!document.getElementById('ep-'+eid))renderEdge(eid);
   });
   updEdges();
-  // Keep selection valid
   G.sel.forEach(id=>{if(!G.ns[id])G.sel.delete(id);});
   updSt();
+  // If we merged in local-only nodes that remote didn't have, push them back
+  const hasLocalOnly=Object.keys(G.localTouch).some(id=>{
+    return G.ns[id]&&(!d.ns||!d.ns[id]);
+  });
+  if(hasLocalOnly)cloudPushDebounced();
 }
 function cloudPush(){
   if(!CLOUD.enabled||!CLOUD.ref||CLOUD.applying)return;
@@ -1168,7 +1183,8 @@ const G = {
   textSelecting:false,
   textEditing:null,
   pinch:null,lastTap:0,lastTapNode:null,touchPan:null,touchDrag:null,longPress:null,
-  recentEditId:null,recentEditTime:0
+  recentEditId:null,recentEditTime:0,
+  localTouch:{}  // nodeId -> timestamp of last local change
 };
 
 // ══════════════════════════════════════════════
@@ -1255,7 +1271,10 @@ function nAdd(type,x,y,data={},w,h){
   const id=gid();
   const def=nDef(type);
   G.ns[id]={id,type,x:x||100,y:y||100,w:w||def.w,h:h||def.h,d:{...def.d,...data}};
+  G.localTouch[id]=Date.now();
   saveHist();renderNode(id);updSt();mm();
+  // Push new node to cloud immediately so it isn't lost to a stale remote snapshot
+  if(isCloudBoard())cloudPush();
   return id;
 }
 function nDef(t){
@@ -2603,6 +2622,7 @@ function saveTxtHtml(id){
   G.ns[id].d.richText=true;
   // Protect this node from remote overwrite for a short window
   G.recentEditId=id;G.recentEditTime=Date.now();
+  G.localTouch[id]=Date.now();
   // Only add to history if content actually changed
   if(G.ns[id].d.title!==prevT||G.ns[id].d.body!==prevB)saveHist();
 }
@@ -3402,6 +3422,4 @@ setInterval(saveStore,8000);
 </script>
 </body>
 </html>
-
-
 
