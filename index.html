@@ -76,6 +76,9 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'DM Sans',sans-seri
 #topbar{position:fixed;top:0;left:0;right:0;height:50px;background:var(--panel-bg);border-bottom:1px solid var(--b1);display:flex;align-items:center;padding:0 14px;gap:5px;z-index:100;backdrop-filter:blur(20px);}
 .tb-logo{font-family:'Syne',sans-serif;font-weight:800;font-size:18px;letter-spacing:-0.5px;cursor:default;flex-shrink:0;}
 .tb-logo em{color:var(--acc);font-style:normal;}
+.tb-home-btn{height:30px;padding:0 11px;border:1px solid var(--b1);border-radius:7px;background:transparent;color:var(--txt2);font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .12s;flex-shrink:0;}
+.tb-home-btn:hover{background:var(--s2);border-color:var(--acc);color:var(--txt);}
+.tb-home-btn svg{width:15px;height:15px;}
 .tb-board-name{height:30px;padding:0 10px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--txt2);font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;transition:all .12s;}
 .tb-board-name:hover{background:var(--s2);border-color:var(--b1);color:var(--txt);}
 .tb-group{display:flex;align-items:center;gap:2px;}
@@ -447,6 +450,11 @@ body.light #theme-btn::after{content:''}
 .bs-del:hover{background:#ef4444;transform:scale(1.1);}
 .bs-rename{background:transparent;border:none;font-family:'Syne',sans-serif;font-weight:700;font-size:14px;color:var(--txt);width:100%;outline:none;cursor:text;}
 .bs-rename:focus{color:var(--acc);}
+.bs-tag{position:absolute;top:8px;left:8px;font-size:9px;font-weight:700;padding:3px 7px;border-radius:5px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;z-index:2;}
+.bs-tag-local{background:rgba(99,102,241,.85);color:#fff;}
+.bs-tag-cloud{background:rgba(16,185,129,.9);color:#fff;}
+.bs-card-cloud .bs-thumb-cloud{background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(6,182,212,.12));}
+.bs-name{font-weight:700;font-size:14px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-thumb{background:var(--b2);border-radius:3px;}
 </style>
@@ -480,6 +488,10 @@ body.light #theme-btn::after{content:''}
   <!-- Topbar -->
   <div id="topbar">
     <div class="tb-logo">Mind<em>Flow</em></div>
+    <button class="tb-home-btn" onclick="goHome()" title="Inicio — Mis canvas">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l6-5 6 5v7a1 1 0 01-1 1h-3v-5H7v5H4a1 1 0 01-1-1z"/></svg>
+      Inicio
+    </button>
     <button class="tb-board-name" id="tb-board-name" onclick="showBoardsScreen()" title="Cambiar canvas">Sin título ▾</button>
     <div class="sp"></div>
     <div class="tb-group">
@@ -988,7 +1000,8 @@ const CLOUD={
   applying:false,     // true while writing remote→local (prevents echo loops)
   saveTimer:null,     // debounce for pushing local→remote
   connected:false,
-  pendingRemote:null  // remote snapshot deferred while user edits
+  pendingRemote:null,  // remote snapshot deferred while user edits
+  everHadData:false,initialized:false
 };
 function initFirebase(){
   try{
@@ -1013,9 +1026,11 @@ function cloudConnect(code){
   // Detach previous listener
   if(CLOUD.ref)CLOUD.ref.off();
   CLOUD.code=key;
+  CLOUD.everHadData=false;CLOUD.initialized=false;
   CLOUD.ref=CLOUD.db.ref('boards/'+key);
   BS.current='cloud:'+key;
   localStorage.setItem('mf-current',BS.current);
+  addCloudRecent(key);
   hideBoardsScreen();
   G.ns={};G.es={};G.sel.clear();G.nid=1;G.hist=[];G.hIdx=-1;
   document.querySelectorAll('.node').forEach(n=>n.remove());
@@ -1038,13 +1053,24 @@ function cloudConnect(code){
         applyVP();mm();
         CLOUD.applying=false;
       });
+      CLOUD.everHadData=true;
     }else{
-      // Empty board in cloud — push current or create welcome
+      // Board is empty in cloud.
       CLOUD.applying=true;
-      if(!Object.keys(G.ns).length)welcome();
-      renderAll();applyVP();mm();
+      if(!CLOUD.everHadData&&!CLOUD.initialized){
+        // First-ever connection to a brand-new empty board → show welcome once
+        if(!Object.keys(G.ns).length)welcome();
+        renderAll();applyVP();mm();
+        cloudPush();
+      }else{
+        // User intentionally emptied the board — respect that, don't recreate welcome
+        G.ns={};G.es={};
+        document.querySelectorAll('.node').forEach(n=>n.remove());
+        document.querySelectorAll('.e-path').forEach(e=>e.remove());
+        renderAll();applyVP();mm();
+      }
       CLOUD.applying=false;
-      cloudPush();
+      CLOUD.initialized=true;
     }
     CLOUD.connected=true;updateCloudBadge();
   },err=>{
@@ -1115,6 +1141,7 @@ function isCloudBoard(){return CLOUD.enabled&&CLOUD.ref&&BS.current&&BS.current.
 function cloudDisconnect(){
   if(CLOUD.ref){CLOUD.ref.off();CLOUD.ref=null;}
   CLOUD.code=null;CLOUD.pendingRemote=null;CLOUD.applying=false;
+  CLOUD.everHadData=false;CLOUD.initialized=false;
   clearTimeout(CLOUD.saveTimer);
   updateCloudBadge();
 }
@@ -3037,6 +3064,16 @@ function newBoard(){
   loadBoard(id);
   toast('✦ '+name);
 }
+function goHome(){
+  // Save current work before leaving
+  if(isCloudBoard()){cloudPush();cloudDisconnect();}
+  else if(BS.current){saveStore();}
+  BS.current=null;
+  localStorage.removeItem('mf-current');
+  updateCloudBadge();
+  updateTopbarBoardName();
+  showBoardsScreen();
+}
 function showBoardsScreen(){
   renderBoardsGrid();
   document.getElementById('boards-screen').style.display='flex';
@@ -3044,15 +3081,32 @@ function showBoardsScreen(){
 function hideBoardsScreen(){
   document.getElementById('boards-screen').style.display='none';
 }
+function getCloudRecents(){
+  try{return JSON.parse(localStorage.getItem('mf-cloud-recents')||'[]');}catch(e){return[];}
+}
+function addCloudRecent(code){
+  let list=getCloudRecents();
+  list=list.filter(r=>r.code!==code);
+  list.unshift({code,visited:Date.now()});
+  if(list.length>20)list=list.slice(0,20);
+  localStorage.setItem('mf-cloud-recents',JSON.stringify(list));
+}
+function removeCloudRecent(code){
+  const list=getCloudRecents().filter(r=>r.code!==code);
+  localStorage.setItem('mf-cloud-recents',JSON.stringify(list));
+  renderBoardsGrid();
+}
 function renderBoardsGrid(){
   const grid=document.getElementById('bs-grid');if(!grid)return;
   const newCard=`<div class="bs-new" onclick="newBoard()"><div class="bs-new-icon">+</div><div class="bs-new-label">Nuevo Canvas</div></div>`;
-  const cards=BS.list.map(b=>{
+  // Local boards
+  const localCards=BS.list.map(b=>{
     const d=new Date(b.updated||b.created);
     const ds=d.toLocaleDateString('es-MX',{day:'numeric',month:'short',year:'numeric'});
     const thumb=b.thumb?`<img src="${b.thumb}" alt="">`:`<div class="bs-thumb-empty">🧠</div>`;
     return`<div class="bs-card" onclick="loadBoard('${b.id}')">
       <div class="bs-thumb">${thumb}</div>
+      <div class="bs-tag bs-tag-local">💾 LOCAL</div>
       <button class="bs-del" onclick="event.stopPropagation();deleteBoard('${b.id}')" title="Eliminar">×</button>
       <div class="bs-info">
         <input class="bs-rename" value="${(b.name||'Sin nombre').replace(/"/g,'&quot;')}"
@@ -3063,7 +3117,22 @@ function renderBoardsGrid(){
       </div>
     </div>`;
   }).join('');
-  grid.innerHTML=newCard+cards;
+  // Cloud boards (recently visited on this device)
+  const recents=getCloudRecents();
+  const cloudCards=recents.map(r=>{
+    const d=new Date(r.visited);
+    const ds=d.toLocaleDateString('es-MX',{day:'numeric',month:'short',year:'numeric'});
+    return`<div class="bs-card bs-card-cloud" onclick="cloudConnect('${r.code}')">
+      <div class="bs-thumb bs-thumb-cloud"><div class="bs-thumb-empty">☁️</div></div>
+      <div class="bs-tag bs-tag-cloud">☁️ NUBE</div>
+      <button class="bs-del" onclick="event.stopPropagation();removeCloudRecent('${r.code}')" title="Quitar de la lista">×</button>
+      <div class="bs-info">
+        <div class="bs-name" style="font-family:'JetBrains Mono',monospace;letter-spacing:.05em">${r.code}</div>
+        <div class="bs-meta">Visitado ${ds}</div>
+      </div>
+    </div>`;
+  }).join('');
+  grid.innerHTML=newCard+cloudCards+localCards;
 }
 function deleteBoard(id){
   if(!confirm('¿Eliminar este canvas?'))return;
@@ -3329,5 +3398,6 @@ setInterval(saveStore,8000);
 </script>
 </body>
 </html>
+
 
 
