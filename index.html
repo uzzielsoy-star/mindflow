@@ -1017,6 +1017,10 @@ function cloudConnect(code){
   BS.current='cloud:'+key;
   localStorage.setItem('mf-current',BS.current);
   hideBoardsScreen();
+  G.ns={};G.es={};G.sel.clear();G.nid=1;G.hist=[];G.hIdx=-1;
+  document.querySelectorAll('.node').forEach(n=>n.remove());
+  document.querySelectorAll('.e-path').forEach(e=>e.remove());
+  renderAll();
   toast('☁️ Conectando: '+key+'...');
   // Initial load + realtime listener
   CLOUD.ref.on('value',snap=>{
@@ -1108,6 +1112,12 @@ function updateCloudBadge(){
   b.style.color=CLOUD.connected?'var(--grn)':'var(--ylw)';
 }
 function isCloudBoard(){return CLOUD.enabled&&CLOUD.ref&&BS.current&&BS.current.startsWith('cloud:');}
+function cloudDisconnect(){
+  if(CLOUD.ref){CLOUD.ref.off();CLOUD.ref=null;}
+  CLOUD.code=null;CLOUD.pendingRemote=null;CLOUD.applying=false;
+  clearTimeout(CLOUD.saveTimer);
+  updateCloudBadge();
+}
 
 
 const G = {
@@ -2953,14 +2963,17 @@ function initBoards(){
   }
 }
 function loadBoard(id){
+  cloudDisconnect(); // detach cloud so its data can't bleed in
   BS.current=id;localStorage.setItem('mf-current',id);
   hideBoardsScreen();
+  // Wipe in-memory state + DOM from previous board
+  G.ns={};G.es={};G.sel.clear();G.vp={x:0,y:0,s:1};G.nid=1;G.hist=[];G.hIdx=-1;
+  document.querySelectorAll('.node').forEach(n=>n.remove());
+  document.querySelectorAll('.e-path').forEach(e=>e.remove());
   try{
     const raw=localStorage.getItem('mf-board-'+id);
     if(raw){const d=JSON.parse(raw);G.ns=d.ns||{};G.es=d.es||{};G.vp=d.vp||{x:0,y:0,s:1};G.nid=d.nid||1;}
-    else{G.ns={};G.es={};G.vp={x:0,y:0,s:1};G.nid=1;}
   }catch(e){G.ns={};G.es={};G.vp={x:0,y:0,s:1};G.nid=1;}
-  // Pre-load IDB media files, then render
   preloadIDBMedia().then(()=>{
     clearSel(false);renderAll();applyVP();
     if(!Object.keys(G.ns).length)welcome();
