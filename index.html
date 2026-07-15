@@ -1108,7 +1108,7 @@ const G = {
   txtN:null,stickyN:null,vcN:null,
   textSelecting:false,
   textEditing:null,
-  pinch:null,lastTap:0
+  pinch:null,lastTap:0,lastTapNode:null,touchPan:null,touchDrag:null
 };
 
 // ══════════════════════════════════════════════
@@ -1391,11 +1391,6 @@ function showEdgeCx(id,ev){
 // ══════════════════════════════════════════════
 function setupNE(el,id){
   // Touch → forward to mousedown/move/up on the node
-  el.addEventListener('touchstart',tev=>{
-    if(tev.touches.length!==1)return; // let pinch pass to canvas
-    const t=tev.touches[0];
-    el.dispatchEvent(new MouseEvent('mousedown',{bubbles:false,clientX:t.clientX,clientY:t.clientY,button:0}));
-  },{passive:true});
   el.addEventListener('mousedown',ev=>{
     if(ev.target.classList.contains('port')||ev.target.classList.contains('resize-h')||ev.target.classList.contains('n-del')||ev.target.classList.contains('n-add'))return;
     if(['INPUT','TEXTAREA','A'].includes(ev.target.tagName)){
@@ -1413,12 +1408,15 @@ function setupNE(el,id){
     }
     // Exit text edit mode if clicking a different node
     if(G.textEditing&&G.textEditing!==id){exitTextEdit();}
-    // TEXT EDIT MODE: pass all events through, block drag, set text-selection flag
+    // TEXT EDIT MODE: let native text selection work.
+    // Only set the flag so canvas mousemove/drag stays out of the way.
+    // Do NOT stopPropagation aggressively — the browser needs the natural
+    // mousedown→mousemove→mouseup sequence to select text.
     if(G.textEditing===id){
-      ev.stopPropagation();
       G.textSelecting=true;
+      G.drag=null;G.pan=null;G.sbox=null; // ensure no drag logic interferes
       document.addEventListener('mouseup',()=>{G.textSelecting=false;},{once:true});
-      return;
+      return; // no stopPropagation → selection flows naturally
     }
     // Video element and YouTube thumbnail — allow native interaction, no drag
     if(ev.target.tagName==='VIDEO'||ev.target.closest('.yt-thumb')){
@@ -1427,9 +1425,9 @@ function setupNE(el,id){
       return;
     }
     if(ev.target.contentEditable==='true'){
-      ev.stopPropagation();
       // Signal that user is selecting text — canvas mousemove must not interfere
       G.textSelecting=true;
+      G.drag=null;
       document.addEventListener('mouseup',()=>{G.textSelecting=false;},{once:true});
       if(!G.sel.has(id)){
         // First click: select the node and show toolbar
@@ -1437,7 +1435,7 @@ function setupNE(el,id){
         else{G.sel.add(id);el.classList.add('sel');}
         updSt();
       }
-      // Already selected → browser handles text cursor/selection natively
+      // Do NOT stopPropagation → browser handles text cursor/selection natively
       return;
     }
     // Cut tool: don't consume event, let it bubble to canvas handler
@@ -1456,8 +1454,16 @@ function setupNE(el,id){
     startDrag(ev);updSt();
   });
   el.addEventListener('dblclick',ev=>{
-    ev.stopPropagation();ev.preventDefault();
-    editN(id);
+    // If entering text edit on a text/sticky node, DON'T preventDefault —
+    // it would cancel the browser's native text selection ability.
+    const n=G.ns[id];
+    if(n&&(n.type==='text'||n.type==='sticky')){
+      ev.stopPropagation();
+      editN(id);
+    }else{
+      ev.stopPropagation();ev.preventDefault();
+      editN(id);
+    }
   });
   el.addEventListener('contextmenu',ev=>{ev.preventDefault();showNCx(id,ev);});
 }
@@ -1470,11 +1476,13 @@ function initEvents(){
 
   cw.addEventListener('mousedown',cwMouseDown);
   function cwMouseDown(ev){
-    // Exit text edit mode if clicking canvas background
+    // While editing text, if the click is inside the edited node, do nothing here
     if(G.textEditing){
-      const clickedNodeId=ev.target.closest('.node')?.id?.replace('nd-','');
-      if(clickedNodeId!==G.textEditing)exitTextEdit();
+      const clickedNodeId=ev.target.closest?.('.node')?.id?.replace('nd-','');
+      if(clickedNodeId===G.textEditing)return; // let text selection proceed
+      exitTextEdit();
     }
+    if(G.textSelecting)return;
     if(G.tool==='cut'){
       ev.preventDefault();
       const wp=s2w(ev.clientX,ev.clientY);
@@ -1629,37 +1637,63 @@ function initEvents(){
   function dist(t1,t2){return Math.hypot(t2.clientX-t1.clientX,t2.clientY-t1.clientY);}
   function mid(t1,t2){return{x:(t1.clientX+t2.clientX)/2,y:(t1.clientY+t2.clientY)/2};}
 
+  // ══════════════════════════════════════════════
+  // TOUCH GESTURE MODEL:
+  // • 1 finger on empty canvas → PAN
+  // • 1 finger on a node → MOVE that node
+  // • 2 fingers → PINCH ZOOM
+  // • double-tap a node → EDIT (focus keyboard)
+  // • in edit mode → 1 finger does native text selection
+  // ══════════════════════════════════════════════
   cw.addEventListener('touchstart',ev=>{
+    // In text-edit mode, let the browser handle touch natively (selection + keyboard)
+    if(G.textEditing){return;}
+
     if(ev.touches.length===2){
-      // Pinch zoom start
       ev.preventDefault();
       G.pinch={d:dist(ev.touches[0],ev.touches[1]),s:G.vp.s,m:mid(ev.touches[0],ev.touches[1]),vx:G.vp.x,vy:G.vp.y};
-      G.pan=null;G.drag=null;
+      G.pan=null;G.drag=null;G.touchPan=null;
       return;
     }
     const t=ev.touches[0];
-    // Double-tap detection → edit node
     const now=Date.now();
-    const tgtNode=ev.target.closest?.('.node');
-    if(now-G.lastTap<300&&tgtNode){
+    const tgtNodeEl=ev.target.closest?.('.node');
+    const tgtNodeId=tgtNodeEl?.id?.replace('nd-','');
+
+    // Double-tap → edit
+    if(now-G.lastTap<320&&tgtNodeId&&tgtNodeId===G.lastTapNode){
       ev.preventDefault();
-      editN(tgtNode.id.replace('nd-',''));
-      G.lastTap=0;return;
+      G.lastTap=0;G.lastTapNode=null;
+      editN(tgtNodeId);
+      return;
     }
-    G.lastTap=now;
-    // Route to the correct handler: node or canvas
-    const synth={clientX:t.clientX,clientY:t.clientY,button:0,shiftKey:false,altKey:false,
-      target:ev.target,stopPropagation:()=>{},preventDefault:()=>ev.preventDefault(),
-      closest:sel=>ev.target.closest?.(sel)};
-    if(tgtNode){
-      // Dispatch a real mousedown so setupNE handles it
-      ev.target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:t.clientX,clientY:t.clientY,button:0}));
+    G.lastTap=now;G.lastTapNode=tgtNodeId||null;
+
+    // Interactive elements (video, yt, links, buttons) → let them work
+    if(ev.target.tagName==='VIDEO'||ev.target.closest?.('.yt-thumb')||
+       ev.target.tagName==='A'||ev.target.tagName==='BUTTON'||
+       ev.target.classList.contains('port')||ev.target.classList.contains('resize-h')||
+       ev.target.classList.contains('n-del')||ev.target.classList.contains('n-add')){
+      return;
+    }
+
+    if(tgtNodeId&&G.ns[tgtNodeId]){
+      // 1 finger on a node → select + prepare to move it
+      ev.preventDefault();
+      if(!G.sel.has(tgtNodeId)){clearSel();G.sel.add(tgtNodeId);tgtNodeEl.classList.add('sel');updSt();}
+      const st={};G.sel.forEach(sid=>{if(G.ns[sid])st[sid]={x:G.ns[sid].x,y:G.ns[sid].y};});
+      G.touchDrag={ids:Array.from(G.sel),sx:t.clientX,sy:t.clientY,st,started:false};
     }else{
-      cwMouseDown(synth);
+      // 1 finger on empty canvas → PAN
+      ev.preventDefault();
+      G.touchPan={sx:t.clientX,sy:t.clientY,vx:G.vp.x,vy:G.vp.y};
+      clearSel();
     }
   },{passive:false});
 
   cw.addEventListener('touchmove',ev=>{
+    if(G.textEditing){return;} // native selection
+
     if(G.pinch&&ev.touches.length===2){
       ev.preventDefault();
       const nd=dist(ev.touches[0],ev.touches[1]);
@@ -1674,17 +1708,39 @@ function initEvents(){
     }
     if(ev.touches.length!==1)return;
     const t=ev.touches[0];
-    if(G.drag||G.pan||G.conn||G.sbox||G.cut||G.resize)ev.preventDefault();
-    document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:t.clientX,clientY:t.clientY}));
-    // also fire on cw for its own handler
-    cw.dispatchEvent(new MouseEvent('mousemove',{bubbles:false,clientX:t.clientX,clientY:t.clientY}));
+
+    if(G.touchPan){
+      ev.preventDefault();
+      G.vp.x=G.touchPan.vx+(t.clientX-G.touchPan.sx);
+      G.vp.y=G.touchPan.vy+(t.clientY-G.touchPan.sy);
+      applyVP();mm();
+      return;
+    }
+    if(G.touchDrag){
+      ev.preventDefault();
+      const dx=t.clientX-G.touchDrag.sx, dy=t.clientY-G.touchDrag.sy;
+      if(!G.touchDrag.started&&Math.hypot(dx,dy)<5)return;
+      G.touchDrag.started=true;
+      const wdx=dx/G.vp.s, wdy=dy/G.vp.s;
+      G.touchDrag.ids.forEach(id=>{
+        const s0=G.touchDrag.st[id];const n=G.ns[id];
+        if(n&&s0){n.x=s0.x+wdx;n.y=s0.y+wdy;
+          const el=document.getElementById('nd-'+id);
+          if(el){el.style.left=n.x+'px';el.style.top=n.y+'px';}}
+      });
+      updEdges();mm();
+      return;
+    }
   },{passive:false});
 
   cw.addEventListener('touchend',ev=>{
     if(G.pinch){G.pinch=null;return;}
-    const t=ev.changedTouches[0];
-    document.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:t?.clientX||0,clientY:t?.clientY||0}));
-    cw.dispatchEvent(new MouseEvent('mouseup',{bubbles:false,clientX:t?.clientX||0,clientY:t?.clientY||0}));
+    if(G.touchPan){G.touchPan=null;return;}
+    if(G.touchDrag){
+      if(G.touchDrag.started){saveHist();if(isCloudBoard())cloudPushDebounced();}
+      G.touchDrag=null;
+      return;
+    }
   },{passive:false});
 }
 
@@ -2014,10 +2070,18 @@ function enterTextEdit(id){
   const n=G.ns[id];
   if(n?.type==='sticky'){
     const ta=el.querySelector('textarea');
-    if(ta){setTimeout(()=>{ta.focus();const L=ta.value.length;ta.setSelectionRange(L,L);},30);}
+    if(ta){
+      ta.focus(); // synchronous focus for mobile keyboard
+      try{const L=ta.value.length;ta.setSelectionRange(L,L);}catch(e){}
+      setTimeout(()=>ta.focus(),50); // retry for stubborn mobile browsers
+    }
   }else{
     const tt=el.querySelector('.t-title');
-    if(tt){setTimeout(()=>{tt.focus();const r=document.createRange();r.selectNodeContents(tt);r.collapse(false);window.getSelection()?.removeAllRanges();window.getSelection()?.addRange(r);},30);}
+    if(tt){
+      tt.focus(); // synchronous focus for mobile keyboard
+      try{const r=document.createRange();r.selectNodeContents(tt);r.collapse(false);window.getSelection()?.removeAllRanges();window.getSelection()?.addRange(r);}catch(e){}
+      setTimeout(()=>tt.focus(),50);
+    }
   }
 }
 function exitTextEdit(){
@@ -3091,3 +3155,4 @@ setInterval(saveStore,8000);
 </script>
 </body>
 </html>
+
