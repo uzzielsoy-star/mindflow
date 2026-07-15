@@ -1110,6 +1110,10 @@ function applyRemoteState(d){
     if(recentOK&&id===G.recentEditId)return;
     renderNode(id);
   });
+  // Create any edge paths that don't exist yet, then update all positions
+  Object.keys(G.es).forEach(eid=>{
+    if(!document.getElementById('ep-'+eid))renderEdge(eid);
+  });
   updEdges();
   // Keep selection valid
   G.sel.forEach(id=>{if(!G.ns[id])G.sel.delete(id);});
