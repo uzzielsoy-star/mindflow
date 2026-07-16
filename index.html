@@ -187,7 +187,10 @@ textarea{cursor:text!important;}
 
 /* Image */
 .nd-img{width:100%;height:100%;background:var(--s2);border:1px solid var(--b1);border-radius:inherit;overflow:hidden;position:relative;}
-.nd-img img{width:100%;height:calc(100% - 28px);object-fit:contain;background:var(--s2);display:block;}
+.nd-img img{width:100%;height:calc(100% - 28px);object-fit:contain;background:var(--s2);display:block;-webkit-user-drag:none;user-drag:none;-webkit-user-select:none;pointer-events:none;}
+.nd-img .img-dl{position:absolute;top:6px;right:6px;width:30px;height:30px;border:none;border-radius:7px;background:rgba(10,14,24,.75);color:#fff;font-size:14px;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:6;backdrop-filter:blur(6px);}
+.nd-img:hover .img-dl,.node.sel .nd-img .img-dl{display:flex;}
+.nd-img .img-dl:hover{background:var(--acc);}
 .nd-img .img-cap{padding:5px 10px;font-size:11px;color:var(--txt2);background:var(--s3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .nd-img .img-empty{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--txt3);font-size:13px;cursor:pointer;}
 .nd-img .img-empty span{font-size:28px;}
@@ -1037,6 +1040,9 @@ function cloudConnect(code){
   document.querySelectorAll('.e-path').forEach(e=>e.remove());
   renderAll();
   toast('☁️ Conectando: '+key+'...');
+  attachCloudListener(key);
+}
+function attachCloudListener(key){
   // Initial load + realtime listener
   CLOUD.ref.on('value',snap=>{
     if(CLOUD.applying)return;
@@ -1419,7 +1425,7 @@ function nHTML(n){
       const bC=n.d.richText?(n.d.body||''):esc(n.d.body||'');
       return`<div class="nd-text"><div class="t-title" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','title')" style="${titleSt}">${tC}</div><div class="t-body" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','body')" style="${bodySt}">${bC}</div></div>`;
     }
-    case'image':return n.d.url?`<div class="nd-img"><img src="${esc(n.d.url)}" alt="${esc(n.d.lbl)}"><div class="img-cap">${esc(n.d.lbl)||'Imagen'}</div></div>`:`<div class="nd-img"><div class="img-empty" ondblclick="editN('${id}')"><span>🖼</span>Doble clic para<br>agregar imagen</div></div>`;
+    case'image':return n.d.url?`<div class="nd-img"><img src="${esc(n.d.url)}" alt="${esc(n.d.lbl)}" draggable="false" ondragstart="return false"><button class="img-dl" onclick="event.stopPropagation();dlImage('${id}')" title="Descargar imagen">⬇</button><div class="img-cap">${esc(n.d.lbl)||'Imagen'}</div></div>`:`<div class="nd-img"><div class="img-empty" ondblclick="editN('${id}')"><span>🖼</span>Doble clic para<br>agregar imagen</div></div>`;
     case'link':{const dm=()=>{try{return new URL(n.d.url).hostname;}catch(e){return'';}};return n.d.url?`<div class="nd-link"><div class="lk-hdr">${dm()?`<img class="lk-fav" src="https://www.google.com/s2/favicons?domain=${dm()}&sz=32" onerror="this.style.display='none'">`:'🔗'}<div class="lk-title">${esc(n.d.ttl)}</div></div><a href="${esc(n.d.url)}" class="lk-url" target="_blank" onclick="event.stopPropagation()">${esc(n.d.url)}</a>${n.d.dsc?`<div class="lk-desc">${esc(n.d.dsc)}</div>`:''}</div>`:`<div class="nd-link"><div class="lk-hdr"><span>🔗</span><div class="lk-title">${esc(n.d.ttl)}</div></div><div class="lk-empty" ondblclick="editN('${id}')">Doble clic para configurar</div></div>`;}
     case'video':{
       const yt=ytId(n.d.url);
@@ -3397,12 +3403,44 @@ function updateFontPickerBtn(font){
 function openCloudFromModal(){
   const code=document.getElementById('m-cloud-code').value.trim();
   if(!code){toast('⚠️ Ingresa un código');return;}
-  cloudConnect(code);
-  // Show shareable link
+  // If we're currently on a LOCAL board with content → PUBLISH it (keep content)
+  const hasContent=Object.keys(G.ns).length>0;
+  if(!isCloudBoard()&&hasContent){
+    publishCurrentToCloud(code);
+  }else{
+    cloudConnect(code);
+  }
   const link=location.origin+location.pathname+'?code='+encodeURIComponent(codeKey(code));
   document.getElementById('m-cloud-link').value=link;
   document.getElementById('cloud-link-box').style.display='block';
   setTimeout(()=>closeMo('mo-cloud'),400);
+}
+// Publish the CURRENT board's content to a cloud code (migrates existing work)
+function publishCurrentToCloud(code){
+  if(!CLOUD.enabled&&!initFirebase()){toast('⚠️ No se pudo conectar a la nube');return;}
+  const key=codeKey(code);
+  // Snapshot current work BEFORE connecting
+  const snapshot={ns:JSON.parse(JSON.stringify(G.ns)),es:JSON.parse(JSON.stringify(G.es)),nid:G.nid};
+  // Strip session-only blob URLs
+  for(const id in snapshot.ns){if(snapshot.ns[id]?.d)delete snapshot.ns[id].d._blobUrl;}
+  if(CLOUD.ref)CLOUD.ref.off();
+  CLOUD.code=key;CLOUD.everHadData=true;CLOUD.initialized=true;
+  CLOUD.ref=CLOUD.db.ref('boards/'+key);
+  BS.current='cloud:'+key;
+  localStorage.setItem('mf-current',BS.current);
+  addCloudRecent(key);
+  hideBoardsScreen();
+  toast('☁️ Publicando en: '+key+'...');
+  // Write current content to cloud, THEN attach the realtime listener
+  CLOUD.ref.set({ns:snapshot.ns,es:snapshot.es,nid:snapshot.nid,updated:firebase.database.ServerValue.TIMESTAMP,v:2})
+    .then(()=>{
+      toast('✅ Board publicado en '+key);
+      // Mark all current nodes as locally-touched so listener echo won't wipe them
+      const now=Date.now();Object.keys(G.ns).forEach(id=>{G.localTouch[id]=now;});
+      attachCloudListener(key);
+    })
+    .catch(e=>{console.error('Publish failed:',e);toast('⚠️ Error al publicar: '+(e.code||e.message));});
+  updateCloudBadge();updateTopbarBoardName();
 }
 function openCloudFromScreen(){
   const code=document.getElementById('bs-code-input').value.trim();
@@ -3417,9 +3455,25 @@ function copyCloudLink(){
   });
 }
 
+// ══════════════════════════════════════════════
+// DOWNLOAD IMAGE
+// ══════════════════════════════════════════════
+function dlImage(id){
+  const n=G.ns[id];if(!n||!n.d.url){toast('⚠️ Sin imagen');return;}
+  const url=n.d._blobUrl||n.d.url;
+  const name=(n.d.lbl||'imagen').replace(/[^a-zA-Z0-9_-]/g,'_')||'imagen';
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=name+(url.startsWith('data:image/png')?'.png':url.startsWith('data:image/jpeg')?'.jpg':'.png');
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>document.body.removeChild(a),100);
+  toast('⬇ Descargando '+name);
+}
+
 // Auto-save interval
 setInterval(saveStore,8000);
 </script>
 </body>
 </html>
+
 
