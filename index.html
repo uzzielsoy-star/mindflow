@@ -513,6 +513,7 @@ body.light #theme-btn::after{content:''}
       <button class="tb-icon-btn" onclick="importJSON()" title="Abrir tablero JSON" data-ic="open"></button>
       <button class="tb-icon-btn" onclick="showMo('mo-miro')" title="Importar desde Miro" data-ic="import_icon"></button>
       <button class="tb-icon-btn" id="theme-btn" onclick="toggleTheme()" title="Cambiar tema (claro/oscuro)" data-ic="moon"></button>
+      <button class="tb-icon-btn" id="spell-btn" onclick="toggleSpellcheck()" title="Corrector ortográfico" data-ic="spell"></button>
       <button class="tb-icon-btn" onclick="showMo('mo-help')" title="Ayuda y atajos (?)" data-ic="help"></button>
     </div>
     <div class="tb-div"></div>
@@ -973,6 +974,7 @@ const IC={
   moon:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M15 11A7 7 0 018 4a7 7 0 100 10 7 7 0 007-3z"/></svg>`,
   sun:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="9" r="3"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M4.1 4.1l1.4 1.4M12.5 12.5l1.4 1.4M4.1 13.9l1.4-1.4M12.5 5.5l1.4-1.4"/></svg>`,
   help:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><path d="M7 7a2.5 2.5 0 012.5-1.5h.5a2 2 0 010 4c-.83 0-1.5.67-1.5 1.5v.5M9 13.5v.5"/></svg>`,
+  spell:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L6.5 4l3.5 9M4 10h5"/><path d="M12 11.5l1.8 1.8L17 9.5" stroke-width="1.8"/></svg>`,
   share:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><circle cx="3" cy="9" r="2"/><circle cx="13" cy="14" r="2"/><path d="M5 8l6-3M5 10l6 3"/></svg>`,
   boards:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="7" rx="1"/><rect x="10" y="2" width="6" height="4" rx="1"/><rect x="10" y="8" width="6" height="8" rx="1"/><rect x="2" y="11" width="6" height="5" rx="1"/></svg>`,
   open:`<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V5a1 1 0 011-1h3l2 2h5a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-1"/><path d="M1 11h7M5 8l3 3-3 3"/></svg>`,
@@ -1043,47 +1045,59 @@ function cloudConnect(code){
   attachCloudListener(key);
 }
 function attachCloudListener(key){
-  // Initial load + realtime listener
-  CLOUD.ref.on('value',snap=>{
-    if(CLOUD.applying)return;
-    // Defer remote updates while user is editing text OR actively dragging/resizing
-    if(G.textEditing||G.textSelecting||G.drag||G.resize||G.pan||G.touchDrag||G.touchPan){
-      CLOUD.pendingRemote=snap.val();
-      return;
-    }
+  // STEP 1: one-time explicit read to safely determine if board exists.
+  CLOUD.ref.once('value').then(snap=>{
     const d=snap.val();
-    if(d&&(d.ns||d.es)){
-      CLOUD.applying=true;
+    CLOUD.applying=true;
+    if(d&&d.ns&&Object.keys(d.ns).length){
       applyRemoteState(d);
-      preloadIDBMedia().then(()=>{
-        applyVP();mm();
-        CLOUD.applying=false;
-      });
       CLOUD.everHadData=true;
+      backupCloudBoard(key,d);
+      preloadIDBMedia().then(()=>{applyVP();mm();CLOUD.applying=false;});
     }else{
-      // Board is empty in cloud.
-      CLOUD.applying=true;
-      if(!CLOUD.everHadData&&!CLOUD.initialized){
-        // First-ever connection to a brand-new empty board → show welcome once
-        if(!Object.keys(G.ns).length)welcome();
-        renderAll();applyVP();mm();
-        cloudPush();
+      const bk=restoreCloudBackup(key);
+      if(bk&&bk.ns&&Object.keys(bk.ns).length){
+        G.ns=bk.ns;G.es=bk.es||{};G.nid=bk.nid||1;
+        renderAll();applyVP();mm();cloudPush();
+        toast('\u267b\ufe0f Board restaurado desde respaldo local');
       }else{
-        // User intentionally emptied the board — respect that, don't recreate welcome
-        G.ns={};G.es={};
-        document.querySelectorAll('.node').forEach(n=>n.remove());
-        document.querySelectorAll('.e-path').forEach(e=>e.remove());
-        renderAll();applyVP();mm();
+        if(!Object.keys(G.ns).length)welcome();
+        renderAll();applyVP();mm();cloudPush();
       }
       CLOUD.applying=false;
-      CLOUD.initialized=true;
     }
-    CLOUD.connected=true;updateCloudBadge();
-  },err=>{
-    console.error('Cloud read error:',err);
-    toast('⚠️ Error de nube: '+(err.code||err.message||'desconocido'));
+    CLOUD.initialized=true;CLOUD.connected=true;updateCloudBadge();
+    // STEP 2: realtime listener that ONLY syncs (never creates welcome / never wipes on empty)
+    CLOUD.ref.on('value',snap2=>{
+      if(CLOUD.applying)return;
+      if(G.textEditing||G.textSelecting||G.drag||G.resize||G.pan||G.touchDrag||G.touchPan){
+        CLOUD.pendingRemote=snap2.val();return;
+      }
+      const rd=snap2.val();
+      if(rd&&rd.ns&&Object.keys(rd.ns).length){
+        CLOUD.applying=true;
+        applyRemoteState(rd);
+        CLOUD.everHadData=true;
+        backupCloudBoard(key,rd);
+        preloadIDBMedia().then(()=>{applyVP();mm();CLOUD.applying=false;});
+      }
+      CLOUD.connected=true;updateCloudBadge();
+    },err=>{console.error('Cloud sync error:',err);});
+  }).catch(err=>{
+    console.error('Cloud init read failed:',err);
+    toast('\u26a0\ufe0f Error de nube: '+(err.code||err.message||'desconocido'));
+    CLOUD.applying=false;CLOUD.initialized=true;
   });
   updateTopbarBoardName();
+}
+function backupCloudBoard(key,data){
+  try{
+    if(!data||!data.ns||!Object.keys(data.ns).length)return;
+    localStorage.setItem('mf-cloud-bak-'+key,JSON.stringify({ns:data.ns,es:data.es||{},nid:data.nid||1,ts:Date.now()}));
+  }catch(e){}
+}
+function restoreCloudBackup(key){
+  try{const raw=localStorage.getItem('mf-cloud-bak-'+key);return raw?JSON.parse(raw):null;}catch(e){return null;}
 }
 // Apply remote state without destroying the node being edited or the selection
 function applyRemoteState(d){
@@ -1190,7 +1204,8 @@ const G = {
   textEditing:null,
   pinch:null,lastTap:0,lastTapNode:null,touchPan:null,touchDrag:null,longPress:null,
   recentEditId:null,recentEditTime:0,
-  localTouch:{}  // nodeId -> timestamp of last local change
+  localTouch:{},  // nodeId -> timestamp of last local change
+  spellcheck:true
 };
 
 // ══════════════════════════════════════════════
@@ -1206,7 +1221,9 @@ window.addEventListener('DOMContentLoaded',()=>{
     setTimeout(()=>ld.style.display='none',400);
   },700);
   loadTheme();
+  G.spellcheck=localStorage.getItem('mf-spellcheck')!=='0'; // default ON
   initIcons(); // inject SVG icons into all [data-ic] elements
+  updateSpellBtn();
   initEvents();
   initDrop();
   initKB();
@@ -1410,7 +1427,7 @@ function nHTML(n){
   const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const id=n.id;
   switch(n.type){
-    case'sticky':return`<div class="nd-sticky ${n.d.sc||'sc-ylw'}"><div class="stk-lbl">Nota</div><textarea placeholder="Escribe aquí..." oninput="G.ns['${id}'].d.txt=this.value" onchange="saveHist()">${esc(n.d.txt)}</textarea></div>`;
+    case'sticky':return`<div class="nd-sticky ${n.d.sc||'sc-ylw'}"><div class="stk-lbl">Nota</div><textarea placeholder="Escribe aquí..." spellcheck="${G.spellcheck?'true':'false'}"${G.spellcheck?' lang="es"':''} oninput="G.ns['${id}'].d.txt=this.value" onchange="saveHist()">${esc(n.d.txt)}</textarea></div>`;
     case'text':{
       const fmap={syne:"'Syne',sans-serif",poppins:"'Poppins',sans-serif",montserrat:"'Montserrat',sans-serif",inter:"'Inter',sans-serif",raleway:"'Raleway',sans-serif",playfair:"'Playfair Display',serif",josefin:"'Josefin Sans',sans-serif",dm:"'DM Sans',sans-serif",mono:"'JetBrains Mono',monospace"};
       const ff=fmap[n.d.font||'syne']||fmap.syne;
@@ -1423,7 +1440,9 @@ function nHTML(n){
       // richText nodes store HTML; plain text nodes store escaped text
       const tC=n.d.richText?n.d.title:esc(n.d.title||'');
       const bC=n.d.richText?(n.d.body||''):esc(n.d.body||'');
-      return`<div class="nd-text"><div class="t-title" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','title')" style="${titleSt}">${tC}</div><div class="t-body" contenteditable="true" spellcheck="false" oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','body')" style="${bodySt}">${bC}</div></div>`;
+      const sc=G.spellcheck?'true':'false';
+      const lang=G.spellcheck?' lang="es"':'';
+      return`<div class="nd-text"><div class="t-title" contenteditable="true" spellcheck="${sc}"${lang} oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','title')" style="${titleSt}">${tC}</div><div class="t-body" contenteditable="true" spellcheck="${sc}"${lang} oninput="autoResizeTxt('${id}')" onblur="saveTxtHtml('${id}')" onkeydown="txtKeyNav(event,'${id}','body')" style="${bodySt}">${bC}</div></div>`;
     }
     case'image':return n.d.url?`<div class="nd-img"><img src="${esc(n.d.url)}" alt="${esc(n.d.lbl)}" draggable="false" ondragstart="return false"><button class="img-dl" onclick="event.stopPropagation();dlImage('${id}')" title="Descargar imagen">⬇</button><div class="img-cap">${esc(n.d.lbl)||'Imagen'}</div></div>`:`<div class="nd-img"><div class="img-empty" ondblclick="editN('${id}')"><span>🖼</span>Doble clic para<br>agregar imagen</div></div>`;
     case'link':{const dm=()=>{try{return new URL(n.d.url).hostname;}catch(e){return'';}};return n.d.url?`<div class="nd-link"><div class="lk-hdr">${dm()?`<img class="lk-fav" src="https://www.google.com/s2/favicons?domain=${dm()}&sz=32" onerror="this.style.display='none'">`:'🔗'}<div class="lk-title">${esc(n.d.ttl)}</div></div><a href="${esc(n.d.url)}" class="lk-url" target="_blank" onclick="event.stopPropagation()">${esc(n.d.url)}</a>${n.d.dsc?`<div class="lk-desc">${esc(n.d.dsc)}</div>`:''}</div>`:`<div class="nd-link"><div class="lk-hdr"><span>🔗</span><div class="lk-title">${esc(n.d.ttl)}</div></div><div class="lk-empty" ondblclick="editN('${id}')">Doble clic para configurar</div></div>`;}
@@ -3470,10 +3489,28 @@ function dlImage(id){
   toast('⬇ Descargando '+name);
 }
 
+// ══════════════════════════════════════════════
+// SPELLCHECK TOGGLE
+// ══════════════════════════════════════════════
+function toggleSpellcheck(){
+  G.spellcheck=!G.spellcheck;
+  localStorage.setItem('mf-spellcheck',G.spellcheck?'1':'0');
+  updateSpellBtn();
+  // Re-render text/sticky nodes to apply the new spellcheck attr
+  const editing=G.textEditing;
+  Object.keys(G.ns).forEach(id=>{
+    if((G.ns[id].type==='text'||G.ns[id].type==='sticky')&&id!==editing)renderNode(id);
+  });
+  toast(G.spellcheck?'✓ Corrector activado':'Corrector desactivado');
+}
+function updateSpellBtn(){
+  const b=document.getElementById('spell-btn');if(!b)return;
+  b.style.color=G.spellcheck?'var(--acc)':'var(--txt3)';
+  b.title=G.spellcheck?'Corrector ortográfico: ACTIVADO':'Corrector ortográfico: desactivado';
+}
+
 // Auto-save interval
 setInterval(saveStore,8000);
 </script>
 </body>
 </html>
-
-
